@@ -4,9 +4,9 @@ const yargs = require('yargs')
 
 const collectResults = async() => {
     dotenv.config();
-    const { endpoint, token } = acceptCommandLineArgs();
+    const { endpoint, authToken } = acceptCommandLineArgs();
     const octokit: Octokit = new Octokit({
-        auth: token,
+        auth: authToken,
         baseUrl: endpoint
     });
     const promises: Promise<string>[] = Array.from({ length: 100 }, () => runApiRequest(octokit));
@@ -25,7 +25,7 @@ async function runApiRequest(octokit: Octokit) {
     return result;
 }
 
-export function acceptCommandLineArgs(): { endpoint: string, token: string } {
+export function acceptCommandLineArgs(): { endpoint: string, authToken: string } {
     const argv = yargs.default(process.argv.slice(2))
         .env('GITHUB')
         .option('endpoint', {
@@ -35,14 +35,14 @@ export function acceptCommandLineArgs(): { endpoint: string, token: string } {
             type: 'string',
             demandOption: true,
         })
-        .option('token', {
+        .option('authToken', {
             alias: 't',
-            env: 'GITHUB_TOKEN',
+            env: 'GITHUB_AUTH_TOKEN',
             description: 'The personal access token for the GHES Migration API.',
             type: 'string',
             demandOption: true,
         }).argv;
-    return { endpoint: argv.endpoint, token: argv.token };
+    return { endpoint: argv.endpoint, authToken: argv.authToken };
 }
 
 // The main entrypoint for the application
