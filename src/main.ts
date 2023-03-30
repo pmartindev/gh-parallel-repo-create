@@ -12,11 +12,12 @@ const cloneAndCreateRepos = async (gitReposDir: string, octokit: Octokit, args: 
     authToken: string;
     org: string;
     repoUrls: string[];
+    numberOfRepos: number;
 }) => {
     await createOrDeleteDir(gitReposDir);
-    const { apiEndpoint, endpoint, authToken, org, repoUrls } = args;
+    const { apiEndpoint, endpoint, authToken, org, repoUrls, numberOfRepos } = args;
     const clonePromises: Promise<string>[] = repoUrls.map((repoUrl: string) => cloneRepo(repoUrl, gitReposDir));
-    const apiPromises: Promise<string>[] = Array.from({ length: 5 }, () => createOrgRepo(octokit, org));
+    const apiPromises: Promise<string>[] = Array.from({ length: numberOfRepos }, () => createOrgRepo(octokit, org));
     // gather all promise results and filter out empty strings
     const allPromiseResults = (await Promise.all([...apiPromises, ...clonePromises])).filter((result: string) => result !== "");
     return allPromiseResults
@@ -28,8 +29,9 @@ const pushClonedRepos = async (gitReposDir: string, octokit: Octokit, createdRep
     authToken: string;
     org: string;
     repoUrls: string[];
+    numberOfRepos: number;
 }) => {
-    const { apiEndpoint, endpoint, authToken, org, repoUrls } = args;
+    const { apiEndpoint, endpoint, authToken, org, repoUrls, numberOfRepos } = args;
     // read all of the clone dirs in the repos dir
     const clonedRepos = fs.readdirSync(gitReposDir, { withFileTypes: true }).filter((dirent) => dirent.isDirectory()).map((dirent) => dirent.name);;
 
@@ -56,7 +58,7 @@ async function pushRepoToRemote(clonedRepo: string, createdRepo: string, endpoin
 const run = async () => {
     const gitReposDir: string = path.join(__dirname, "repos");
     dotenv.config();
-    const { apiEndpoint, authToken, org, repoUrls } = acceptCommandLineArgs();
+    const { apiEndpoint, endpoint, authToken, org, repoUrls, numberOfRepos } = acceptCommandLineArgs();
     const octokit: Octokit = new Octokit({
         auth: authToken,
         baseUrl: apiEndpoint
@@ -108,7 +110,8 @@ export function acceptCommandLineArgs(): {
     endpoint: string,
     authToken: string,
     org: string,
-    repoUrls: string[]
+    repoUrls: string[],
+    numberOfRepos: number
 } {
     const argv = yargs.default(process.argv.slice(2))
         .env('GITHUB')
@@ -144,6 +147,13 @@ export function acceptCommandLineArgs(): {
             description: 'A comma separated list of repo urls to clone. (ex. https://github.com/torvalds/linux,https://github.com/microsoft/vscode)',
             type: 'string',
             demandOption: true,
+        }).option('numberOfRepos', {
+            alias: 'n',
+            env: 'GITHUB_NUMBER_OF_REPOS',
+            description: 'The number of repos to create (ex. 10)',
+            default: 10,
+            type: 'number',
+            demandOption: false,
         })
         .argv;
     return {
@@ -151,7 +161,8 @@ export function acceptCommandLineArgs(): {
         endpoint: argv.endpoint,
         authToken: argv.authToken,
         org: argv.org,
-        repoUrls: argv.repoUrls.split(',').map((url: string) => url.trim())
+        repoUrls: argv.repoUrls.split(',').map((url: string) => url.trim()),
+        numberOfRepos: argv.numberOfRepos
     };
 }
 
