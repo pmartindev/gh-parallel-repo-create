@@ -1,9 +1,11 @@
 import { Octokit } from "@octokit/rest";
 import dotenv from "dotenv";
-import randomwords from "random-words";
 import simpleGit, { SimpleGit, SimpleGitOptions } from 'simple-git';
 import fs from 'fs';
 import path from "path";
+import { createRepoApi } from "./api-request";
+import { Worker } from 'worker_threads';
+
 const yargs = require('yargs')
 
 const cloneAndCreateRepos = async (gitReposDir: string, octokit: Octokit, args: {
@@ -11,13 +13,13 @@ const cloneAndCreateRepos = async (gitReposDir: string, octokit: Octokit, args: 
     endpoint: string;
     authToken: string;
     org: string;
-    repoUrls: string[];
+    repoUrls: string;
     numberOfRepos: number;
 }) => {
     await createOrDeleteDir(gitReposDir);
-    const { apiEndpoint, endpoint, authToken, org, repoUrls, numberOfRepos } = args;
-    const clonePromises: Promise<string>[] = repoUrls.map((repoUrl: string) => cloneRepo(repoUrl, gitReposDir));
-    const apiPromises: Promise<string>[] = Array.from({ length: numberOfRepos }, () => createOrgRepo(octokit, org));
+    const { org, repoUrls, numberOfRepos } = args;
+    const clonePromises: Promise<string>[] = repoUrls.split(',').map((repoUrl: string) => cloneRepo(repoUrl, gitReposDir));
+    const apiPromises: Promise<string>[] = Array.from({ length: numberOfRepos }, () => createRepoApi(octokit, org));
     // gather all promise results and filter out empty strings
     const allPromiseResults = (await Promise.all([...apiPromises, ...clonePromises])).filter((result: string) => result !== "");
     return allPromiseResults
@@ -28,10 +30,10 @@ const pushClonedRepos = async (gitReposDir: string, octokit: Octokit, createdRep
     endpoint: string;
     authToken: string;
     org: string;
-    repoUrls: string[];
+    repoUrls: string;
     numberOfRepos: number;
 }) => {
-    const { apiEndpoint, endpoint, authToken, org, repoUrls, numberOfRepos } = args;
+    const { endpoint, authToken, org} = args;
     // read all of the clone dirs in the repos dir
     const clonedRepos = fs.readdirSync(gitReposDir, { withFileTypes: true }).filter((dirent) => dirent.isDirectory()).map((dirent) => dirent.name);;
 
@@ -46,19 +48,34 @@ const pushClonedRepos = async (gitReposDir: string, octokit: Octokit, createdRep
     return pushPromiseResults;
 };
 
-async function pushRepoToRemote(clonedRepo: string, createdRepo: string, endpoint: string, authToken: string, org: string, gitReposDir: string) {
-    const git: SimpleGit = simpleGit(`${gitReposDir}/${clonedRepo}`);
-    const defaultBranch = await git.branchLocal();
-    console.log(`Pushing ${clonedRepo} to https://${endpoint}/${org}/${createdRepo}..`);
-    await git.push(`https://ghe-admin:${authToken}@${endpoint}/${org}/${createdRepo}.git`, `${defaultBranch.current}`);
-    console.log(`Pushed ${clonedRepo} to https://${endpoint}/${org}/${createdRepo}`);
-    return `${org}/${createdRepo}`;
-}
+export const pushRepoToRemote = async (clonedRepo: string, createdRepo: string, endpoint: string, authToken: string, org: string, gitReposDir: string): Promise<string> => {
+    console.log("Pushing repo to remote")
+    const worker = new Worker('./dist/push-worker', {
+        workerData: { clonedRepo, createdRepo, endpoint, authToken, org, gitReposDir }
+    });
+    console.log("Worker created")
+    return new Promise((resolve, reject) => {
+        worker.on('message', (message) => {
+            console.log("Worker message received")
+            resolve(message);
+        });
+        worker.on('error', (error) => {
+            console.log("Worker error")
+            reject(error);
+        });
+        worker.on('exit', (code) => {
+            console.log("Worker exited")
+            if (code !== 0) {
+                reject(new Error(`Worker stopped with exit code ${code}`));
+            }
+        });
+    });
+};
 
 const run = async () => {
     const gitReposDir: string = path.join(__dirname, "repos");
     dotenv.config();
-    const { apiEndpoint, endpoint, authToken, org, repoUrls, numberOfRepos } = acceptCommandLineArgs();
+    const { apiEndpoint, authToken } = acceptCommandLineArgs();
     const octokit: Octokit = new Octokit({
         auth: authToken,
         baseUrl: apiEndpoint
@@ -69,17 +86,6 @@ const run = async () => {
     await console.log(pushedRepos);
     await console.log('Done');
 };
-
-async function createOrgRepo(octokit: Octokit, org: string) {
-    const name = randomwords({ exactly: 2, join: '-' });
-    const result: string = (await octokit.repos.createInOrg({
-        name,
-        org,
-        description: 'This is a migration test repo.',
-    })).data.name;
-    console.log(`Created repo ${result}`);
-    return result;
-}
 
 async function cloneRepo(repoUrl: string, gitReposDir: string) {
     const git: SimpleGit = simpleGit();
@@ -110,10 +116,9 @@ export function acceptCommandLineArgs(): {
     endpoint: string,
     authToken: string,
     org: string,
-    repoUrls: string[],
-    numberOfRepos: number
-} {
-    const argv = yargs.default(process.argv.slice(2))
+    repoUrls: string,
+    numberOfRepos: number } {
+    const argv = yargs
         .env('GITHUB')
         .option('apiEndpoint', {
             alias: 'a',
@@ -147,23 +152,17 @@ export function acceptCommandLineArgs(): {
             description: 'A comma separated list of repo urls to clone. (ex. https://github.com/torvalds/linux,https://github.com/microsoft/vscode)',
             type: 'string',
             demandOption: true,
-        }).option('numberOfRepos', {
+        })
+        .option('numberOfRepos', {
             alias: 'n',
             env: 'GITHUB_NUMBER_OF_REPOS',
-            description: 'The number of repos to create (ex. 10)',
-            default: 10,
+            description: 'The number of repos to create. (ex. 10)',
             type: 'number',
+            default: 10,
             demandOption: false,
-        })
-        .argv;
-    return {
-        apiEndpoint: argv.apiEndpoint,
-        endpoint: argv.endpoint,
-        authToken: argv.authToken,
-        org: argv.org,
-        repoUrls: argv.repoUrls.split(',').map((url: string) => url.trim()),
-        numberOfRepos: argv.numberOfRepos
-    };
+        }).argv;
+        const { apiEndpoint, endpoint, authToken, org, repoUrls, numberOfRepos } = argv;
+        return { apiEndpoint, endpoint, authToken, org, repoUrls, numberOfRepos };
 }
 
 // The main entrypoint for the application
